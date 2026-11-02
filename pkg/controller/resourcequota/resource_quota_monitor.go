@@ -377,6 +377,6 @@ func (qm *QuotaMonitor) processResourceChanges(ctx context.Context) bool {
 		"uid", string(accessor.GetUID()),
 		"eventType", event.eventType,
 	)
-	qm.replenishmentFunc(ctx, event.gvr.GroupResource(), accessor.GetNamespace())
+	qm.replenishmentFunc(ctx, event.gvr.GroupResource(), replenishmentNamespace(accessor))
 	return true
 }

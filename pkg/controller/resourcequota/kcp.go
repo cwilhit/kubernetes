@@ -23,6 +23,7 @@ import (
 
 	"github.com/kcp-dev/logicalcluster/v3"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -73,4 +74,17 @@ func (rq *Controller) ResyncMonitors(ctx context.Context, resources map[schema.G
 // EnqueueAll re-enqueues every quota to recompute .status.used.
 func (rq *Controller) EnqueueAll(ctx context.Context) {
 	rq.enqueueAll(ctx)
+}
+
+// replenishmentNamespace retains logical-cluster identity for cluster-scoped
+// informer events. The native quota lister uses an encoded namespace even when
+// the original object has no namespace. Losing the prefix silently drops the
+// deletion's quota replenishment event.
+func replenishmentNamespace(obj metav1.Object) string {
+	namespace := obj.GetNamespace()
+	cluster := logicalcluster.From(obj)
+	if cluster.Empty() || IsEncodedNamespace(namespace) {
+		return namespace
+	}
+	return EncodeNamespace(cluster, namespace)
 }
