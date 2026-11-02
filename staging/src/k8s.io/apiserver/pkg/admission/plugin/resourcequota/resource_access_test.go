@@ -246,3 +246,53 @@ func TestGetQuotas(t *testing.T) {
 		t.Errorf("Expected 1 resource quota call, got %d", listCallCountTestNamespace2)
 	}
 }
+
+// Cluster-scoped lookups must not select namespaced quotas or reserve the
+// same admin quota twice. Check both a synced lister and live lookup fallback.
+func TestClusterScopedQuotaSelectedOnce(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, namespace := range []string{"", "admin", "tenant"} {
+			t.Run(fmt.Sprintf("cached-%v-namespace-%s", cached, namespace), func(t *testing.T) {
+				quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "workspaces", Namespace: "admin", Annotations: map[string]string{kcpExperimentalClusterScopedQuotaAnnotationKey: "true"}}}
+				ordinary := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "ordinary", Namespace: "admin"}}
+				tenant := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "tenant", Namespace: "tenant"}}
+				client := fake.NewSimpleClientset(quota, ordinary, tenant)
+				factory := informers.NewSharedInformerFactory(client, 0)
+				informer := factory.Core().V1().ResourceQuotas()
+				if cached {
+					for _, q := range []*corev1.ResourceQuota{quota, ordinary, tenant} {
+						if err := informer.Informer().GetIndexer().Add(q); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				accessor, _ := newQuotaAccessor()
+				accessor.client = client
+				accessor.lister = informer.Lister()
+				accessor.hasSynced = func() bool { return cached }
+				quotas, err := accessor.GetQuotas(namespace)
+				want := 1
+				if namespace != "" {
+					want = 2
+				}
+				if err != nil || len(quotas) != want {
+					t.Fatalf("selected %d quotas, want %d: %v", len(quotas), want, err)
+				}
+				seen := map[string]bool{}
+				for _, q := range quotas {
+					key := q.Namespace + "/" + q.Name
+					if seen[key] {
+						t.Fatalf("duplicate quota: %s", key)
+					}
+					seen[key] = true
+				}
+				if !seen["admin/workspaces"] {
+					t.Fatal("cluster quota missing")
+				}
+				if namespace == "" && (seen["admin/ordinary"] || seen["tenant/tenant"]) {
+					t.Fatal("namespaced quota applied to cluster-scoped request")
+				}
+			})
+		}
+	}
+}

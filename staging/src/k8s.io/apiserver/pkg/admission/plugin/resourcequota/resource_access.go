@@ -146,13 +146,18 @@ func (e *quotaAccessor) GetQuotas(namespace string) ([]corev1.ResourceQuota, err
 
 	// determine if there are any quotas in this namespace
 	// if there are no quotas, we don't need to do anything
-	items, err := e.lister.ResourceQuotas(namespace).List(labels.Everything())
+	// NamespaceAll is the empty namespace. Its lister returns quotas from
+	// every namespace, which are not applicable to a cluster-scoped request.
+	items := []*corev1.ResourceQuota{}
+	if namespace != "" {
+		items, err = e.lister.ResourceQuotas(namespace).List(labels.Everything())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("error resolving quota: %v", err)
 	}
 
 	// if there are no items held in our unsynced lister, check our live-lookup LRU, if that misses, do the live lookup to prime it.
-	if len(items) == 0 && !e.hasSynced() {
+	if namespace != "" && len(items) == 0 && !e.hasSynced() {
 		lruItemObj, ok := e.liveLookupCache.Get(namespace)
 		if !ok || lruItemObj.(liveLookupEntry).expiry.Before(time.Now()) {
 			// use singleflight.Group to avoid flooding the apiserver with repeated
@@ -193,8 +198,16 @@ func (e *quotaAccessor) GetQuotas(namespace string) ([]corev1.ResourceQuota, err
 	}
 
 	resourceQuotas := []corev1.ResourceQuota{}
+	// An admin namespace request can find the same quota through both lists.
+	// Evaluate each quota once so status updates cannot conflict with themselves.
+	seen := map[string]bool{}
 	for i := range items {
 		quota := items[i]
+		key := quota.Namespace + "/" + quota.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		quota = e.checkCache(quota)
 		// always make a copy.  We're going to muck around with this and we should never mutate the originals
 		resourceQuotas = append(resourceQuotas, *quota)
